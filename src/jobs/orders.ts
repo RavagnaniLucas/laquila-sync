@@ -33,6 +33,7 @@ export interface OrderRow {
   laquila_order_id: string | null;
   laquila_send_lock: Date | null;
   tracking_code: string | null;
+  tracking_company: string | null;
   attempts: number;
   created_at: Date;
 }
@@ -146,15 +147,19 @@ async function step(o: OrderRow): Promise<OrderStatus | null> {
         itens: o.items.map((i) => ({ sku: i.sku, qty: i.quantity, unitPrice: Number(prices.find((p) => p.sku === i.sku)?.cost ?? 0) })),
       });
       await event(o.shopify_order_id, 'laquila_response', res.raw);
+      if (res.warning) await event(o.shopify_order_id, 'laquila_aviso_saldo', { mensagem: res.warning });
       if (!res.id) return hold(o, 'Laquila respondeu sem número de pedido: verificar resposta bruta no histórico');
       await sql`update orders set laquila_order_id = ${res.id} where shopify_order_id = ${o.shopify_order_id}`;
       return 'laquila_sent';
     }
 
     case 'laquila_sent': {
-      const xml = await laquila.invoiceXml(o.laquila_order_id!, 'V').catch(() => null);
-      if (!xml || !xml.includes('<nfeProc')) return hold(o, 'Aguardando a Laquila faturar (NF de venda)');
-      await event(o.shopify_order_id, 'laquila_nf_venda', { size: xml.length });
+      // 00008 mostra quando a venda Laquila → você foi faturada (ex.: cd_situacao_venda "F").
+      const st = await laquila.order(o.laquila_order_id!);
+      if (st) await event(o.shopify_order_id, 'laquila_status', { venda: st.vendaSituacaoDesc, remessa: st.remessaSituacaoDesc });
+      if (!st?.chaveNotaVenda && st?.vendaSituacao !== 'F') return hold(o, `Aguardando a Laquila faturar (${st?.vendaSituacaoDesc ?? 'sem status'})`);
+      const xml = await laquila.invoiceXml(o.laquila_order_id!, 'V');
+      if (!xml.includes('<nfeProc') && !xml.includes('<NFe')) return hold(o, 'Laquila faturou, mas o XML da NF de venda ainda não veio');
       await sql`insert into order_events (shopify_order_id, kind, detail) values (${o.shopify_order_id}, 'xml_venda', ${sql.json({ xml })})`;
       return 'laquila_invoiced';
     }
@@ -174,28 +179,29 @@ async function step(o: OrderRow): Promise<OrderStatus | null> {
     case 'nfe_issued': {
       const nfe = await blingApi.getInvoice(Number(o.bling_nfe_id));
       const xmlUrl: string | undefined = nfe?.data?.xml;
-      if (!xmlUrl) return hold(o, 'NF-e sem link de XML no Bling');
+      const chave: string | undefined = nfe?.data?.chaveAcesso;
+      if (!xmlUrl || !chave) return hold(o, 'NF-e sem XML ou chave de acesso no Bling');
       const xml = await (await fetch(xmlUrl)).text();
-      await laquila.sendInvoiceXml(o.laquila_order_id!, xml);
+      await laquila.sendInvoiceXml(o.laquila_order_id!, xml, chave);
       return 'xml_sent';
     }
 
     case 'xml_sent':
-      // A etiqueta depende da transportadora escolhida (Correios, Melhor Envio...). Por enquanto,
-      // ela é enviada pelo painel interno (POST /admin/pedidos/:id/etiqueta), que chama o 00010.
+      // A etiqueta é gerada por você (Correios, Melhor Envio...) e enviada pelo painel interno
+      // (POST /admin/pedidos/:id/etiqueta), que chama o 00010 e grava o código de rastreio.
       return hold(o, 'Aguardando etiqueta de frete');
 
     case 'label_sent': {
-      const info: any = await laquila.shipment(o.laquila_order_id!);
-      // TODO: formato do 00015 não documentado. Procuramos um campo de rastreio.
-      const code = findTracking(info);
-      if (!code) return hold(o, 'Aguardando despacho pela Laquila');
-      await sql`update orders set tracking_code = ${code} where shopify_order_id = ${o.shopify_order_id}`;
+      // O rastreio é o da etiqueta que você gerou. Aqui só esperamos a Laquila despachar,
+      // o que aparece no 00008 como nota de remessa emitida.
+      const st = await laquila.order(o.laquila_order_id!);
+      if (!st?.notaRemessa && !st?.chaveNotaRemessa) return hold(o, `Aguardando despacho pela Laquila (${st?.remessaSituacaoDesc ?? 'sem status'})`);
+      if (!o.tracking_code) return hold(o, 'Despachado, mas sem código de rastreio cadastrado');
       return 'shipped';
     }
 
     case 'shipped': {
-      await shopify.fulfillOrder(o.shopify_order_id, { number: o.tracking_code!, company: 'Correios' });
+      await shopify.fulfillOrder(o.shopify_order_id, { number: o.tracking_code!, company: o.tracking_company ?? 'Correios' });
       return 'fulfilled';
     }
 
@@ -237,14 +243,4 @@ export function findDocument(payload: any): string {
 export function extractNumber(address1: string | undefined): string {
   const m = /,\s*(\d+[A-Za-z]?)/.exec(address1 ?? '') ?? /\s(\d+[A-Za-z]?)\b/.exec(address1 ?? '');
   return m?.[1] ?? 'S/N';
-}
-
-function findTracking(v: any): string | null {
-  if (!v || typeof v !== 'object') return null;
-  for (const [k, val] of Object.entries(v)) {
-    if (/rastre|tracking|cd_objeto|objeto/i.test(k) && typeof val === 'string' && val.trim()) return val.trim();
-    const inner = findTracking(val);
-    if (inner) return inner;
-  }
-  return null;
 }

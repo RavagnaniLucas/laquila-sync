@@ -3,7 +3,7 @@ import { sql } from '../lib/db.js';
 import { logger } from '../lib/logger.js';
 import { computePrice, type PricingRules } from '../domain/pricing.js';
 import { shownStock } from '../domain/stock.js';
-import { LaquilaClient } from '../clients/laquila.js';
+import { LaquilaClient, type LaquilaItemFilter } from '../clients/laquila.js';
 import * as bling from '../clients/bling.js';
 import * as shopify from '../clients/shopify.js';
 
@@ -31,6 +31,38 @@ async function run<T>(job: string, fn: () => Promise<T>): Promise<T> {
 }
 
 /**
+ * Cadastro: lê os dados do 00007 (descrição, EAN, NCM, peso, medidas da caixa) e grava no banco.
+ * Não publica nada; a publicação só acontece para produtos habilitados (publishCatalog).
+ * Fotos e marca não vêm da API da Laquila: ficam para preencher por outra fonte.
+ */
+export function importItems(filter: LaquilaItemFilter = {}, laquila = new LaquilaClient()) {
+  return run('items', async () => {
+    let read = 0;
+    let inactive = 0;
+    for await (const page of laquila.items(filter)) {
+      read += page.length;
+      for (const it of page) {
+        if (!it.active) inactive++;
+        await sql`
+          insert into products (sku, title, description_html, gtin, ncm, weight_kg, raw, brand, laquila_active)
+          values (${it.sku}, ${it.title}, ${toHtml(it.description)}, ${it.gtin}, ${it.ncm},
+                  ${it.weightGrossKg ?? it.weightNetKg}, ${sql.json(it.raw as any)}, ${filter.ds_marca ?? null}, ${it.active})
+          on conflict (sku) do update set title = excluded.title, description_html = excluded.description_html,
+            gtin = excluded.gtin, ncm = excluded.ncm, weight_kg = excluded.weight_kg, raw = excluded.raw,
+            brand = coalesce(excluded.brand, products.brand), laquila_active = excluded.laquila_active, updated_at = now()`;
+      }
+    }
+    return { read, inactive };
+  });
+}
+
+function toHtml(text: string): string | null {
+  if (!text) return null;
+  const esc = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return esc.split(/\r?\n+/).map((l) => `<p>${l.trim()}</p>`).join('');
+}
+
+/**
  * Estoque: lê o saldo da Laquila (00017), recalcula o que mostrar e envia só o que mudou
  * para Shopify e Bling. Só mexe em produtos habilitados e já publicados.
  */
@@ -38,8 +70,10 @@ export function syncStock(laquila = new LaquilaClient()) {
   return run('stock', async () => {
     let read = 0;
     const changed: Array<{ sku: string; shown: number; inventoryItemId: string | null; blingId: string | null }> = [];
-    for await (const page of laquila.stock()) {
-      read += page.length;
+    // 00017 é uma foto completa do saldo (limite de 3 consultas por hora).
+    const page = await laquila.stock();
+    read = page.length;
+    {
       for (const it of page) {
         const [row] = await sql<{ shown_qty: number | null; enabled: boolean; shopify_inventory_item_id: string | null; bling_id: string | null; qty_max: number | null }[]>`
           insert into products (sku, laquila_cadastro, laquila_qty, qty_max)
@@ -112,7 +146,7 @@ export function syncPrices(laquila = new LaquilaClient()) {
 export function publishCatalog(onlySku?: string) {
   return run('publish', async () => {
     const rows = await sql<any[]>`
-      select * from products where enabled and price is not null and title is not null
+      select * from products where enabled and laquila_active and price is not null and title is not null
       ${onlySku ? sql`and sku = ${onlySku}` : sql``}`;
     let ok = 0;
     const failed: string[] = [];

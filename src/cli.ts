@@ -31,10 +31,8 @@ const commands: Record<string, { help: string; run: () => Promise<unknown> }> = 
     run: () => bling.upsertProduct({ sku: TEST_SKU, nome: 'TESTE integração Laquila (não vender)', preco: 99.9 }),
   },
   'laquila:saldo': {
-    help: 'Mostra os 5 primeiros itens do saldo (leitura)',
-    run: async () => {
-      for await (const page of new LaquilaClient().stock(5)) return page;
-    },
+    help: 'Mostra 5 itens do saldo (leitura; conta 1 das 3 consultas por hora do 00017)',
+    run: async () => (await new LaquilaClient().stock()).slice(0, 5),
   },
   'laquila:preco': {
     help: 'Mostra os 5 primeiros itens de preço (leitura)',
@@ -42,8 +40,17 @@ const commands: Record<string, { help: string; run: () => Promise<unknown> }> = 
       for await (const page of new LaquilaClient().prices(5)) return page;
     },
   },
-  'laquila:item': { help: 'Resposta bruta do 00007 para um SKU (leitura)', run: () => new LaquilaClient().item(args[0] ?? '') },
-  'sync:agora': { help: 'Enfileira stock | price | publish', run: () => syncQueue.add(args[0] ?? 'stock', {}) },
+  'laquila:item': { help: 'Dados cadastrais (00007) de um SKU (leitura)', run: () => new LaquilaClient().item(args[0] ?? '') },
+  'laquila:marca': {
+    help: 'Primeiros 10 itens de uma marca pelo 00007, ex.: laquila:marca TEXX (leitura)',
+    run: async () => {
+      for await (const page of new LaquilaClient().items({ ds_marca: args[0] ?? '' }, 10)) return page.map(({ raw, ...i }) => i);
+    },
+  },
+  'laquila:transportadoras': { help: 'Lista códigos de transportadora (00015, leitura)', run: () => new LaquilaClient().carriers() },
+  'laquila:limite': { help: 'Limite/saldo financeiro (00004, leitura; 6 por hora)', run: () => new LaquilaClient().credit() },
+  'laquila:pedido': { help: 'Status de um pedido na Laquila (00008, leitura)', run: () => new LaquilaClient().order(args[0] ?? '') },
+  'sync:agora': { help: 'Enfileira stock | price | items | publish', run: () => syncQueue.add(args[0] ?? 'stock', {}) },
 };
 
 async function main() {

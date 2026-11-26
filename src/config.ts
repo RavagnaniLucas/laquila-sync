@@ -49,8 +49,10 @@ const schema = z.object({
   STOCK_MAX_SHOWN: z.coerce.number().default(50),
 
   // Agendamentos (cron)
-  CRON_STOCK: z.string().default('*/15 * * * *'),
+  // A Laquila aceita só 3 consultas de saldo (00017) por hora: a cada 30 min usa 2 e sobra 1.
+  CRON_STOCK: z.string().default('*/30 * * * *'),
   CRON_PRICE: z.string().default('0 */6 * * *'),
+  CRON_ITEMS: z.string().default('30 4 * * *'), // cadastro (00007) uma vez por dia, de madrugada
   CRON_ORDERS_STATUS: z.string().default('*/15 * * * *'),
 });
 

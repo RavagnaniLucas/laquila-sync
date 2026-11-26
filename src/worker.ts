@@ -3,7 +3,7 @@ import { config } from './config.js';
 import { sql } from './lib/db.js';
 import { logger } from './lib/logger.js';
 import { connection, enqueueOrder, ordersQueue, syncQueue } from './lib/queue.js';
-import { publishCatalog, syncPrices, syncStock } from './jobs/catalog.js';
+import { importItems, publishCatalog, syncPrices, syncStock } from './jobs/catalog.js';
 import { advanceOrder, type OrderStatus } from './jobs/orders.js';
 
 const WAITING: OrderStatus[] = ['received', 'bling_created', 'laquila_sent', 'laquila_invoiced', 'nfe_issued', 'label_sent', 'shipped'];
@@ -18,9 +18,11 @@ async function main() {
   if (config.LAQUILA_ENABLED) {
     await syncQueue.upsertJobScheduler('stock', { pattern: config.CRON_STOCK }, { name: 'stock' });
     await syncQueue.upsertJobScheduler('price', { pattern: config.CRON_PRICE }, { name: 'price' });
+    await syncQueue.upsertJobScheduler('items', { pattern: config.CRON_ITEMS }, { name: 'items' });
   } else {
     await syncQueue.removeJobScheduler('stock');
     await syncQueue.removeJobScheduler('price');
+    await syncQueue.removeJobScheduler('items');
     logger.warn('Laquila desligada: sync de estoque e preço não agendado');
   }
   await syncQueue.upsertJobScheduler('orders-sweep', { pattern: config.CRON_ORDERS_STATUS }, { name: 'orders-sweep' });
@@ -31,6 +33,7 @@ async function main() {
       switch (job.name) {
         case 'stock': return syncStock();
         case 'price': return syncPrices();
+        case 'items': return importItems(job.data?.filter ?? {});
         case 'publish': return publishCatalog(job.data?.sku);
         case 'orders-sweep': {
           // Reavalia pedidos parados em etapas que dependem de terceiros.

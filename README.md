@@ -16,9 +16,10 @@ Laquila ──(saldo, preço, notas)──► serviço na VPS ──► Bling  (
 | Shopify: token, produto (rascunho), preço, estoque, webhooks, envio com rastreio | Pronto, falta testar na sua loja |
 | Bling v3: login OAuth, produto, estoque, contato, pedido de venda, gerar NF-e | Pronto, falta testar na sua conta |
 | Pedido Shopify → Bling | Pronto, falta testar |
-| Pedido → Laquila (00002), notas (00012), cancelamento (00009) | Pronto pelo PDF, **desligado** até chegar o token |
-| Saldo (00017) e preço (00018) agendados | Pronto pelo PDF, **desligado** até chegar o token |
-| Dados do produto (fotos, descrição, NCM), etiqueta (00010), rastreio (00015), XML (00003) | **Esperando documentação da Laquila** |
+| Laquila, conforme a documentação oficial (/docs da API): saldo (00017), preço (00018), cadastro (00007), pedido (00002), status (00008), cancelamento (00009), XML (00003, 00012), etiqueta (00010), transportadoras (00015), limite (00004) | Pronto e testado contra uma Laquila falsa; **desligado** até chegar o token |
+| Fotos e marca dos produtos | **A API não fornece.** A marca vem do filtro `ds_marca` na importação; fotos precisam de outra fonte |
+
+Limites da Laquila respeitados: saldo (00017) no máximo 3 vezes por hora (agendado a cada 30 min) e limite financeiro (00004) 6 por hora. Um erro 429 não é repetido.
 
 Tudo que depende da Laquila fica atrás de `LAQUILA_ENABLED=false`. Os pedidos param na etapa "Aguardando integração com a Laquila" sem erro. O mesmo vale para `BLING_ENABLED` e `SHOPIFY_ENABLED`.
 
@@ -29,6 +30,7 @@ Tudo que depende da Laquila fica atrás de `LAQUILA_ENABLED=false`. Os pedidos p
 - A transmissão à Laquila tem trava: o mesmo pedido **nunca** é enviado duas vezes (cada envio custa R$ 8 e debita o saldo). Se algo falhar no meio, confira no painel da Laquila e só então libere com `POST /admin/pedidos/:id/liberar-laquila`.
 - A NF-e ao consumidor é **gerada** no Bling, mas a emissão fica com você até o contador validar o fluxo fiscal.
 - Pedidos parados são reavaliados a cada 15 minutos.
+- O rastreio é o da etiqueta que você gera: ao enviar a etiqueta (`POST /admin/pedidos/:id/etiqueta` com `base64` e `rastreio`), o serviço manda o arquivo à Laquila e, quando ela emite a nota de remessa, marca o pedido como enviado na Shopify.
 
 ## Segurança
 
@@ -71,7 +73,9 @@ docker compose run --rm app npm run cli -- shopify:locais          # leitura
 docker compose run --rm app npm run cli -- shopify:produto-teste   # cria 1 rascunho de teste
 docker compose run --rm app npm run cli -- bling:depositos         # leitura
 docker compose run --rm app npm run cli -- bling:produto-teste     # cria 1 produto de teste
-docker compose run --rm app npm run cli -- laquila:saldo           # quando houver token
+docker compose run --rm app npm run cli -- laquila:transportadoras # quando houver token
+docker compose run --rm app npm run cli -- laquila:marca TEXX
+docker compose run --rm app npm run cli -- laquila:item 1111111
 ```
 
 ## Desenvolvimento

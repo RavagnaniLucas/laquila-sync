@@ -83,23 +83,25 @@ app.register(async (admin) => {
     return { ok: true };
   });
 
-  // Envia a etiqueta (PDF em base64) à Laquila e segue o fluxo.
+  // Envia a etiqueta (arquivo em Base64, normalmente PDF) à Laquila pelo 00010 e grava o rastreio.
   admin.post('/admin/pedidos/:id/etiqueta', async (req, reply) => {
     const id = decodeURIComponent((req.params as any).id);
-    const body = JSON.parse(String(req.body ?? '{}')) as { base64?: string; formato?: string };
-    if (!body.base64) return reply.code(400).send({ erro: 'Envie { base64, formato }' });
-    const [o] = await sql<{ laquila_order_id: string | null; status: string }[]>`
-      select laquila_order_id, status from orders where shopify_order_id = ${id}`;
+    const body = JSON.parse(String(req.body ?? '{}')) as { base64?: string; nomeArquivo?: string; rastreio?: string; transportadora?: string };
+    if (!body.base64 || !body.rastreio) return reply.code(400).send({ erro: 'Envie { base64, rastreio, nomeArquivo?, transportadora? }' });
+    const [o] = await sql<{ laquila_order_id: string | null; status: string; shopify_order_name: string }[]>`
+      select laquila_order_id, status, shopify_order_name from orders where shopify_order_id = ${id}`;
     if (!o?.laquila_order_id || o.status !== 'xml_sent') return reply.code(409).send({ erro: 'Pedido não está aguardando etiqueta' });
-    await new LaquilaClient().sendLabel(o.laquila_order_id, { base64: body.base64, format: body.formato ?? 'PDF' });
-    await sql`update orders set status = 'label_sent', updated_at = now() where shopify_order_id = ${id}`;
+    const fileName = body.nomeArquivo ?? `etiqueta-${o.shopify_order_name.replace('#', '')}.pdf`;
+    await new LaquilaClient().sendLabel(o.laquila_order_id, { base64: body.base64, fileName });
+    await sql`update orders set status = 'label_sent', label_file = ${fileName}, tracking_code = ${body.rastreio},
+      tracking_company = ${body.transportadora ?? 'Correios'}, updated_at = now() where shopify_order_id = ${id}`;
     await enqueueOrder(id);
     return { ok: true };
   });
 
   admin.post('/admin/sync/:job', async (req, reply) => {
     const job = (req.params as any).job as string;
-    if (!['stock', 'price', 'publish'].includes(job)) return reply.code(400).send();
+    if (!['stock', 'price', 'publish', 'items'].includes(job)) return reply.code(400).send();
     await syncQueue.add(job, {});
     return { ok: true, job };
   });
