@@ -1,0 +1,7 @@
+{$PUBLIC_HOST} {
+	encode gzip
+	reverse_proxy app:3000
+	log {
+		output stdout
+	}
+}

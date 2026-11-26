@@ -1,0 +1,25 @@
+# Aplica migrações do banco. Só roda quando você clica em "Run workflow"
+# e aprova no ambiente "production" (regra: banco não muda sem aprovação).
+name: Migrar banco
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Rodar migrações na VPS
+        env:
+          SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          HOST: ${{ secrets.VPS_HOST }}
+          USER: ${{ secrets.VPS_USER }}
+          KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_deploy && chmod 600 ~/.ssh/id_deploy
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          ssh -i ~/.ssh/id_deploy "$USER@$HOST" "cd /opt/laquila-sync && docker compose exec -T postgres pg_dump -U laquila laquila | gzip > backups/antes-da-migracao-\$(date +%F-%H%M).sql.gz && docker compose run --rm app node dist/src/lib/migrate.js"
